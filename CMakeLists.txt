@@ -11,7 +11,7 @@ cmake_minimum_required (VERSION 2.8.12 FATAL_ERROR)
 # XXX This can be potentially done in future, but there still exist
 # some dependent project using cmake 2.8 - this can't be done this way.
 #cmake_minimum_required (VERSION 3.0.2 FATAL_ERROR)
-#project(SRT VERSION "1.3.4")
+#project(SRT VERSION "1.4.1")
 project(SRT C CXX)
 
 set (CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/scripts")
@@ -27,7 +27,9 @@ set_if(DARWIN      ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 set_if(LINUX       ${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 set_if(BSD         ${SYSNAME_LC} MATCHES "bsd$")
 set_if(MICROSOFT   WIN32 AND (NOT MINGW AND NOT CYGWIN))
-set_if(SYMLINKABLE LINUX OR DARWIN OR BSD OR CYGWIN)
+set_if(GNU         ${CMAKE_SYSTEM_NAME} MATCHES "GNU")
+set_if(POSIX       LINUX OR DARWIN OR BSD OR (CYGWIN AND CYGWIN_USE_POSIX))
+set_if(SYMLINKABLE LINUX OR DARWIN OR BSD OR CYGWIN OR GNU)
 
 # Not sure what to do in case of compiling by MSVC.
 # This will make installdir in C:\Program Files\SRT then
@@ -38,7 +40,7 @@ if (NOT DEFINED CMAKE_INSTALL_LIBDIR)
 	include(GNUInstallDirs)
 endif()
 
-set (SRT_VERSION 1.4.0)
+set (SRT_VERSION 1.4.1)
 set_version_variables(SRT_VERSION ${SRT_VERSION})
 
 # The CMAKE_BUILD_TYPE seems not to be always set, weird.
@@ -94,6 +96,7 @@ endif()
 option(CYGWIN_USE_POSIX "Should the POSIX API be used for cygwin. Ignored if the system isn't cygwin." OFF)
 option(ENABLE_CXX11 "Should the c++11 parts (srt-live-transmit) be enabled" ON)
 option(ENABLE_APPS "Should the Support Applications be Built?" ON)
+option(ENABLE_TESTING "Should the Developer Test Applications be Built?" OFF)
 option(ENABLE_PROFILE "Should instrument the code for profiling. Ignored for non-GNU compiler." $ENV{HAI_BUILD_PROFILE})
 option(ENABLE_LOGGING "Should logging be enabled" ON)
 option(ENABLE_HEAVY_LOGGING "Should heavy debug logging be enabled" ${ENABLE_HEAVY_LOGGING_DEFAULT})
@@ -105,26 +108,20 @@ option(ENABLE_SUFLIP "Should suflip tool be built" OFF)
 option(ENABLE_GETNAMEINFO "In-logs sockaddr-to-string should do rev-dns" OFF)
 option(ENABLE_UNITTESTS "Enable unit tests" OFF)
 option(ENABLE_ENCRYPTION "Enable encryption in SRT" ON)
-option(USE_GNUTLS "DEPRECATED. Use USE_ENCLIB=openssl|gnutls|mbedtls instead" OFF)
 option(ENABLE_CXX_DEPS "Extra library dependencies in srt.pc for the CXX libraries useful with C language" ON)
 option(USE_STATIC_LIBSTDCXX "Should use static rather than shared libstdc++" OFF)
 option(ENABLE_INET_PTON "Set to OFF to prevent usage of inet_pton when building against modern SDKs while still requiring compatibility with older Windows versions, such as Windows XP, Windows Server 2003 etc." ON)
 option(ENABLE_CODE_COVERAGE "Enable code coverage reporting" OFF)
-
-# ENABLE_MONOTONIC_CLOCK: enforces the use of clock_gettime to get the current
-# time, instead of gettimeofday. This function allows to force a monotonic
-# clock, which is independent on the currently set time in the system.  The CV,
-# for which the *_timedwait() functions are used with so obtained current time,
-# must be appropriately configured. The consequence of enabling this option,
-# however, may be portability issues around the clock_gettime() function, which
-# is not available on every SDK, or extra -lrt option is sometimes required
-# (this requirement will be autodetected).
 option(ENABLE_MONOTONIC_CLOCK "Enforced clock_gettime with monotonic clock on GC CV /temporary fix for #729/" OFF)
 option(USE_OPENSSL_PC "Use pkg-config to find OpenSSL libraries" ON)
 option(USE_BUSY_WAITING "Enable more accurate sending times at a cost of potentially higher CPU load" OFF)
 option(USE_GNUSTL "Get c++ library/headers from the gnustl.pc" OFF)
 
 set(TARGET_srt "srt" CACHE STRING "The name for the SRT library")
+
+# Use application-defined group reader
+# (currently the only one implemented)
+add_definitions(-DSRT_ENABLE_APP_READER)
 
 if (NOT ENABLE_LOGGING)
 	set (ENABLE_HEAVY_LOGGING OFF)
@@ -161,32 +158,51 @@ if (NOT USE_ENCLIB)
 
 endif()
 
+set(USE_ENCLIB "${USE_ENCLIB}" CACHE STRING "The crypto library that SRT uses")
+set_property(CACHE USE_ENCLIB PROPERTY STRINGS "openssl" "gnutls" "mbedtls")
 
 # Make sure DLLs and executabes go to the same path regardles of subdirectory
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
-# Handle WITH_COMPILER_PREFIX and WITH_COMPILER_TYPE options
-if (DEFINED WITH_COMPILER_PREFIX)
-	message(STATUS "Handling compiler with WITH_COMPILER_PREFIX=${WITH_COMPILER_PREFIX}")
-	# Check also type. Default is gcc.
-	if (NOT DEFINED WITH_COMPILER_TYPE)
-		set (WITH_COMPILER_TYPE gcc)
-	endif()
+if (NOT DEFINED WITH_COMPILER_TYPE)
 
-	if (${WITH_COMPILER_TYPE} STREQUAL gcc)
-		set (CMAKE_C_COMPILER ${WITH_COMPILER_PREFIX}gcc)
-		set (CMAKE_CXX_COMPILER ${WITH_COMPILER_PREFIX}g++)
-	elseif (${WITH_COMPILER_TYPE} STREQUAL cc)
-		set (CMAKE_C_COMPILER ${WITH_COMPILER_PREFIX}cc)
-		set (CMAKE_CXX_COMPILER ${WITH_COMPILER_PREFIX}c++)
+	# This is for a case when you provided the prefix, but you didn't
+	# provide compiler type. This option is in this form predicted to work
+	# only on POSIX systems. Just typical compilers for Linux and Mac are
+	# included. 
+	if (DARWIN)
+		set (WITH_COMPILER_TYPE clang)
+	elseif (POSIX) # Posix, but not DARWIN
+		set(WITH_COMPILER_TYPE gcc)
+	else()
+		get_filename_component(WITH_COMPILER_TYPE ${CMAKE_C_COMPILER} NAME)
+	endif()
+	set (USING_DEFAULT_COMPILER_PREFIX 1)
+endif()
+
+if (NOT USING_DEFAULT_COMPILER_PREFIX OR DEFINED WITH_COMPILER_PREFIX)
+	message(STATUS "Handling compiler with PREFIX=${WITH_COMPILER_PREFIX} TYPE=${WITH_COMPILER_TYPE}")
+
+	parse_compiler_type(${WITH_COMPILER_TYPE} COMPILER_TYPE COMPILER_SUFFIX)
+
+	if (${COMPILER_TYPE} STREQUAL gcc)
+		set (CMAKE_C_COMPILER ${WITH_COMPILER_PREFIX}gcc${COMPILER_SUFFIX})
+		set (CMAKE_CXX_COMPILER ${WITH_COMPILER_PREFIX}g++${COMPILER_SUFFIX})
+	elseif (${COMPILER_TYPE} STREQUAL cc)
+		set (CMAKE_C_COMPILER ${WITH_COMPILER_PREFIX}cc${COMPILER_SUFFIX})
+		set (CMAKE_CXX_COMPILER ${WITH_COMPILER_PREFIX}c++${COMPILER_SUFFIX})
+	elseif (${COMPILER_TYPE} STREQUAL icc)
+		set (CMAKE_C_COMPILER ${WITH_COMPILER_PREFIX}icc${COMPILER_SUFFIX})
+		set (CMAKE_CXX_COMPILER ${WITH_COMPILER_PREFIX}icpc${COMPILER_SUFFIX})
 	else()
 		# Use blindly <command> for C compiler and <command>++ for C++.
 		# At least this matches clang.
 		set (CMAKE_C_COMPILER ${WITH_COMPILER_PREFIX}${WITH_COMPILER_TYPE})
-		set (CMAKE_CXX_COMPILER ${WITH_COMPILER_PREFIX}${WITH_COMPILER_TYPE}++)
+		set (CMAKE_CXX_COMPILER ${WITH_COMPILER_PREFIX}${COMPILER_TYPE}++${COMPILER_SUFFIX})
 	endif()
+	message(STATUS "Compiler type: ${WITH_COMPILER_TYPE}. C: ${CMAKE_C_COMPILER}; C++: ${CMAKE_CXX_COMPILER}")
 else()
 	message(STATUS "No WITH_COMPILER_PREFIX - using C++ compiler ${CMAKE_CXX_COMPILER}")
 endif()
@@ -271,11 +287,10 @@ if (ENABLE_ENCRYPTION)
 		else()
 			if ("${USE_ENCLIB}" STREQUAL "mbedtls")
 				if ("${SSL_LIBRARY_DIRS}" STREQUAL "")
-					if (NOT "${CMAKE_PREFIX_PATH}" STREQUAL "")
-						message(STATUS "WARNING: pkg-config has incorrect prefix - enforcing target path prefix: ${CMAKE_PREFIX_PATH}")
-						set (SSL_LIBRARY_DIRS ${CMAKE_PREFIX_PATH}/${CMAKE_INSTALL_LIBDIR})
-						set (SSL_INCLUDE_DIRS ${CMAKE_PREFIX_PATH}/include)
-					endif()
+					set(MBEDTLS_PREFIX "${CMAKE_PREFIX_PATH}" CACHE PATH "The path of mbedtls")
+					find_package(MbedTLS REQUIRED)
+					set (SSL_INCLUDE_DIRS ${MBEDTLS_INCLUDE_DIR})
+					set (SSL_LIBRARIES  ${MBEDTLS_LIBRARIES})
 				endif()
 				if ("${SSL_LIBRARIES}" STREQUAL "")
 					set (SSL_LIBRARIES  mbedtls mbedcrypto)
@@ -305,7 +320,7 @@ if ( USE_GNUSTL )
 endif()
 
 # Detect if the compiler is GNU compatable for flags
-if(${CMAKE_CXX_COMPILER_ID} MATCHES "GNU|Intel|Clang|AppleClang")
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Intel|Clang|AppleClang")
 	message(STATUS "COMPILER: ${CMAKE_CXX_COMPILER_ID} (${CMAKE_CXX_COMPILER}) - GNU compat")
 	set(HAVE_COMPILER_GNU_COMPAT 1)
 else()
@@ -364,8 +379,6 @@ endif()
 set (srt_libspec_shared ${ENABLE_SHARED})
 set (srt_libspec_static ${ENABLE_STATIC})
 
-set (haicrypt_libspec VIRTUAL)
-
 set (srtpack_libspec_common)
 if (srt_libspec_shared)
 	list(APPEND srtpack_libspec_common ${TARGET_srt}_shared)
@@ -393,9 +406,16 @@ elseif(BSD)
 elseif(LINUX)
 	add_definitions(-DLINUX=1)
 	message(STATUS "DETECTED SYSTEM: LINUX;  LINUX=1" )
+elseif(ANDROID)
+	add_definitions(-DLINUX=1)
+	add_definitions(-DANDROID=1)
+	message(STATUS "DETECTED SYSTEM: ANDROID;  LINUX=1 ANDROID=1" )
 elseif(CYGWIN)
 	add_definitions(-DCYGWIN=1)
 	message(STATUS "DETECTED SYSTEM: CYGWIN (posix mode); CYGWIN=1")
+elseif(GNU)
+	add_definitions(-DGNU=1)
+	message(STATUS "DETECTED SYSTEM: GNU;  GNU=1" )
 else()
 	message(FATAL_ERROR "Unsupported system: ${CMAKE_SYSTEM_NAME}")
 endif()
@@ -452,15 +472,16 @@ if (ENABLE_CODE_COVERAGE)
 	if (HAVE_COMPILER_GNU_COMPAT)
 		add_definitions(-g -O0 --coverage)
 		link_libraries(--coverage)
+		message(STATUS "ENABLE_CODE_COVERAGE: ON")
 	else()
-		message(FATAL_ERROR "Code coverage option is not supported on this platform")
+		message(FATAL_ERROR "ENABLE_CODE_COVERAGE: option is not supported on this platform")
 	endif()
 endif()
 
 if (PTHREAD_LIBRARY AND PTHREAD_INCLUDE_DIR)
 	message(STATUS "Pthread library: ${PTHREAD_LIBRARY}")
 	message(STATUS "Pthread include dir: ${PTHREAD_INCLUDE_DIR}")
-elseif (WIN32 AND NOT MINGW)
+elseif (MICROSOFT)
 	find_package(pthreads QUIET)
 
 	if (NOT PTHREAD_INCLUDE_DIR OR NOT PTHREAD_LIBRARY)
@@ -486,7 +507,25 @@ elseif (WIN32 AND NOT MINGW)
 		endif()
 
 		#find pthread library
-		find_library(PTHREAD_LIBRARY NAMES pthread pthread_dll pthread_lib HINTS C:/pthread-win32/lib C:/pthread-win64/lib ${PTHREAD_PACKAGE_LIB_HINT})
+		set(PTHREAD_LIB_SUFFIX "")
+		if (ENABLE_DEBUG)
+			set(PTHREAD_LIB_SUFFIX "d")
+		endif ()
+
+		set(PTHREAD_COMPILER_FLAG "")
+		if (MICROSOFT)
+			set(PTHREAD_COMPILER_FLAG "V")
+		elseif (MINGW)
+			set(PTHREAD_COMPILER_FLAG "G")
+		endif ()
+
+		foreach(EXHAND C CE SE)
+			foreach(COMPAT 1 2)
+				list(APPEND PTHREAD_W32_LIBRARY "pthread${PTHREAD_COMPILER_FLAG}${EXHAND}${PTHREAD_LIB_SUFFIX}${COMPAT}")
+			endforeach()
+		endforeach()
+
+		find_library(PTHREAD_LIBRARY NAMES ${PTHREAD_W32_LIBRARY} pthread pthread_dll pthread_lib HINTS C:/pthread-win32/lib C:/pthread-win64/lib ${PTHREAD_PACKAGE_LIB_HINT})
 		if (PTHREAD_LIBRARY)
 			message(STATUS "Pthread library: ${PTHREAD_LIBRARY}")
 		else()
@@ -543,8 +582,6 @@ endif()
 # so consider adding at least one real source file to any target that references $<TARGET_OBJECTS:objlib>.
 set(OBJECT_LIB_SUPPORT "${PROJECT_SOURCE_DIR}/cmake_object_lib_support.c")
 
-add_library(haicrypt_virtual OBJECT ${SOURCES_haicrypt} ${SOURCES_common})
-
 # NOTE: The "virtual library" is a library specification that cmake
 # doesn't support (the library of OBJECT type is something in kind of that,
 # but not fully supported - for example it doesn't support transitive flags,
@@ -565,28 +602,37 @@ MafReadDir(srtcore filelist.maf
 )
 
 # Auto generated version file and add it to the HEADERS_srt list.
+if(DEFINED ENV{APPVEYOR_BUILD_NUMBER})
+	set(SRT_VERSION_BUILD ON)
+	set(APPVEYOR_BUILD_NUMBER_STRING $ENV{APPVEYOR_BUILD_NUMBER})
+	message(STATUS "AppVeyor build environment detected: Adding build number to version header")
+endif()
+
 configure_file("srtcore/version.h.in" "version.h" @ONLY)
 
 list(INSERT HEADERS_srt 0 "${CMAKE_CURRENT_BINARY_DIR}/version.h")
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 
-add_library(srt_virtual OBJECT ${SOURCES_srt} ${SOURCES_srt_extra} ${HEADERS_srt})
+add_library(srt_virtual OBJECT ${SOURCES_srt} ${SOURCES_srt_extra} ${HEADERS_srt} ${SOURCES_haicrypt} ${SOURCES_common})
 
 if (ENABLE_SHARED)
 	# Set this to sources as well, as it won't be automatically handled
-	foreach (tar srt_virtual haicrypt_virtual)
-		set_target_properties(${tar} PROPERTIES POSITION_INDEPENDENT_CODE 1)
-	endforeach()
+	set_target_properties(srt_virtual PROPERTIES POSITION_INDEPENDENT_CODE 1)
+
+	#add resource files to shared library, to set DLL metadata on Windows DLLs
+	if (MICROSOFT)
+		MafReadDir(srtcore filelist.maf
+			SOURCES_WIN32_SHARED SOURCES_srt_shared_win32
+		)
+		
+		message(STATUS "WINDOWS detected: Adding sources to SRT shared project: ${SOURCES_srt_shared_win32}")
+	endif()
 endif()
 
-# Manual handling of dependency on virtual library
-# By setting the target, all settings applied to the haicrypt target
-# will now apply to the dependent library.
-#list(APPEND SOURCES_srt ${SOURCES_haicrypt})
-set (VIRTUAL_srt $<TARGET_OBJECTS:srt_virtual> $<TARGET_OBJECTS:haicrypt_virtual>)
+set (VIRTUAL_srt $<TARGET_OBJECTS:srt_virtual>)
 
 if (srt_libspec_shared)
-	add_library(${TARGET_srt}_shared SHARED ${OBJECT_LIB_SUPPORT} ${VIRTUAL_srt})
+	add_library(${TARGET_srt}_shared SHARED ${OBJECT_LIB_SUPPORT} ${VIRTUAL_srt} ${SOURCES_srt_shared_win32} ${HEADERS_srt_shared_win32})
 	# shared libraries need PIC
 	set (CMAKE_POSITION_INDEPENDENT_CODE ON)
 	set_property(TARGET ${TARGET_srt}_shared PROPERTY OUTPUT_NAME ${TARGET_srt})
@@ -597,6 +643,7 @@ if (srt_libspec_shared)
 	endif()
 	if (MICROSOFT)
 		target_link_libraries(${TARGET_srt}_shared PRIVATE ws2_32.lib)
+		set_target_properties(${TARGET_srt}_shared PROPERTIES LINK_FLAGS "/DELAYLOAD:libeay32.dll")
 	elseif (MINGW)
 		target_link_libraries(${TARGET_srt}_shared PRIVATE wsock32.lib ws2_32.lib)
 	elseif (APPLE)
@@ -638,29 +685,13 @@ if (srt_libspec_static)
 	endif()
 endif()
 
-
-
-# ---
-# And back to target: haicrypt. Both targets must be defined
-# prior to setting flags, and after defining the list of sources
-# can no longer be extended.
-#
-# For haicrypt.spec = VIRTUAL, these settings apply to srt.
-# Otherwise they apply to haicrypt.
-# ---
-
-
-target_include_directories(haicrypt_virtual PRIVATE  ${SSL_INCLUDE_DIRS})
+target_include_directories(srt_virtual PRIVATE  ${SSL_INCLUDE_DIRS})
 
 if (MICROSOFT)
 	set (SRT_LIBS_PRIVATE ${SRT_LIBS_PRIVATE} ws2_32.lib)
 elseif (MINGW)
 	set (SRT_LIBS_PRIVATE ${SRT_LIBS_PRIVATE} -lwsock32 -lws2_32)
 endif()
-
-# ---
-# So, back to target: srt. Setting the rest of the settings for srt target.
-# ---
 
 # Applying this to public includes is not transitive enough.
 # On Windows, apps require this as well, so it's safer to
@@ -682,10 +713,8 @@ endforeach()
 set (SRT_LIBS_PRIVATE ${SRT_LIBS_PRIVATE} ${PTHREAD_LIBRARY})
 
 target_compile_definitions(srt_virtual PRIVATE -DSRT_EXPORTS )
-target_compile_definitions(haicrypt_virtual PUBLIC -DHAICRYPT_DYNAMIC)
 if (ENABLE_SHARED)
-	target_compile_definitions(srt_virtual PUBLIC -DSRT_DYNAMIC) 
-	target_compile_definitions(haicrypt_virtual PRIVATE -DHAICRYPT_EXPORTS)
+	target_compile_definitions(srt_virtual PUBLIC -DSRT_DYNAMIC)
 endif()
 
 if (srt_libspec_shared)
@@ -805,7 +834,7 @@ macro(srt_make_application name)
 	endif()
 
 	# We state that Darwin always uses CLANG compiler, which honors this flag the same way.
-	set_target_properties(${name} PROPERTIES COMPILE_FLAGS "${CFLAGS_CXX_STANDARD} ${EXTRA_stransmit}" ${FORCE_RPATH})
+	set_target_properties(${name} PROPERTIES COMPILE_FLAGS "${CFLAGS_CXX_STANDARD}" ${FORCE_RPATH})
 
 	target_link_libraries(${name} ${srt_link_library})
 	if (USE_GNUSTL)
@@ -851,6 +880,9 @@ if (ENABLE_APPS)
 	# Applications
 
 	srt_add_application(srt-live-transmit ${VIRTUAL_srtsupport})
+	if (DEFINED EXTRA_stransmit)
+		set_target_properties(srt-live-transmit PROPERTIES COMPILE_FLAGS "${EXTRA_stransmit}")
+	endif()
 	srt_add_application(srt-file-transmit ${VIRTUAL_srtsupport})
 
 	if (MINGW)
@@ -901,6 +933,10 @@ if (ENABLE_APPS)
 
 		srt_add_testprogram(srt-test-multiplex)
 		srt_make_application(srt-test-multiplex)
+
+		srt_add_testprogram(srt-test-mpbond)
+		srt_make_application(srt-test-mpbond)
+
 	endif()
 
 endif()
@@ -913,17 +949,26 @@ if (ENABLE_EXAMPLES)
 		srt_add_program(${name} examples/${mainsrc} ${ARGN})
 	endmacro()
 
-	srt_add_example(sendfile.cpp apps/logsupport.cpp)
+	srt_add_example(sendfile.cpp)
 	srt_make_application(sendfile)
 
-	srt_add_example(recvfile.cpp apps/logsupport.cpp)
+	srt_add_example(recvfile.cpp)
 	srt_make_application(recvfile)
+
+	srt_add_example(recvlive.cpp)
+	srt_make_application(recvlive)
 
 	srt_add_example(test-c-client.c)
 	srt_make_application(test-c-client)
 
 	srt_add_example(test-c-server.c)
 	srt_make_application(test-c-server)
+
+	srt_add_example(test-c-client-bonding.c)
+	srt_make_application(test-c-client-bonding)
+
+	srt_add_example(test-c-server-bonding.c)
+	srt_make_application(test-c-server-bonding)
 
 	srt_add_example(testcapi-connect.c)
 	target_link_libraries(testcapi-connect ${srt_link_library} ${DEPENDS_srt})

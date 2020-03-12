@@ -134,6 +134,8 @@ MACRO(MafReadDir directory maffile)
 		PUBLIC_HEADERS     # installable headers for include
 		PROTECTED_HEADERS  # installable headers used by other headers
 		PRIVATE_HEADERS    # non-installable headers
+		SOURCES_WIN32_SHARED	# windows specific SOURCES
+		PRIVATE_HEADERS_WIN32_SHARED	# windows specific PRIVATE_HEADERS
 		OPTIONS
 	)
 	cmake_parse_arguments(MAFREAD_VAR "" "${MAFREAD_TAGS}" "" ${ARGN})
@@ -286,4 +288,22 @@ function (test_requires_clock_gettime _result)
 	endif()
 
 	message(FATAL_ERROR "clock_gettime() is not available on this system")
+endfunction()
+
+function (parse_compiler_type wct _type _suffix)
+	if (wct STREQUAL "")
+		set(${_type} "" PARENT_SCOPE)
+		set(${_suffix} "" PARENT_SCOPE)
+	else()
+		string(REPLACE "-" ";" OUTLIST ${wct})
+		list(LENGTH OUTLIST OUTLEN)
+		list(GET OUTLIST 0 ITEM)
+		set(${_type} ${ITEM} PARENT_SCOPE)
+		if (OUTLEN LESS 2)
+			set(_suffix "" PARENT_SCOPE)
+		else()
+			list(GET OUTLIST 1 ITEM)
+			set(${_suffix} "-${ITEM}" PARENT_SCOPE)
+		endif()
+	endif()
 endfunction()

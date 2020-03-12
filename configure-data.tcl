@@ -35,7 +35,6 @@ set internal_options {
 set cmake_options {
     cygwin-use-posix "Should the POSIX API be used for cygwin. Ignored if the system isn't cygwin. (default: OFF)"
     enable-encryption "Should encryption features be enabled (default: ON)"
-    enable-unittests "Should the unit tests be enabled (default: OFF)"
     enable-c++11 "Should the c++11 parts (srt-live-transmit) be enabled (default: ON)"
     enable-apps "Should the Support Applications be Built? (default: ON)"
     enable-testing "Should developer testing applications be built (default: OFF)"
@@ -171,9 +170,16 @@ proc GetCompilerCommand {} {
 	# --cmake-c[++]-compiler
 	# (cmake-toolchain-file will set things up without the need to check things here)
 
+	set compiler gcc
+	if { [info exists ::optval(--with-compiler-type)] } {
+		set compiler $::optval(--with-compiler-type)
+	}
+
 	if { [info exists ::optval(--with-compiler-prefix)] } {
 		set prefix $::optval(--with-compiler-prefix)
-		return ${prefix}gcc
+		return ${prefix}$compiler
+	} else {
+		return $compiler
 	}
 
 	if { [info exists ::optval(--cmake-c-compiler)] } {
@@ -202,6 +208,7 @@ proc postprocess {} {
 	set toolchain_changed no
 	foreach changer {
 		--with-compiler-prefix
+		--with-compiler-type
 		--cmake-c-compiler
 		--cmake-c++-compiler
 		--cmake-cxx-compiler
@@ -224,6 +231,7 @@ proc postprocess {} {
 		# Check characteristics of the compiler - in particular, whether the target is different
 		# than the current target.
 		set compiler_path ""
+		set target_platform ""
 		set cmd [GetCompilerCommand]
 		if { $cmd != "" } {
 			set gcc_version [exec $cmd -v 2>@1]
@@ -238,7 +246,7 @@ proc postprocess {} {
 			}
 
 			if { $target_platform == "" } {
-				puts "NOTE: can't obtain target from gcc -v: $l"
+				puts "NOTE: can't obtain target from '[file tail $cmd] -v': $l - ASSUMING HOST compiler"
 			} else {
 				if { $target_platform != $::tcl_platform(machine) } {
 					puts "NOTE: foreign target type detected ($target)" ;# - setting CROSSCOMPILING flag"
@@ -246,6 +254,8 @@ proc postprocess {} {
 					set iscross 1
 				}
 			}
+		} else {
+			puts "CONFIGURE: default compiler used"
 		}
 	}
 

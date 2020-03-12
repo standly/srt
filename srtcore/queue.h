@@ -147,7 +147,7 @@ private:
 struct CSNode
 {
    CUDT* m_pUDT;		// Pointer to the instance of CUDT socket
-   uint64_t m_llTimeStamp_tk;      // Time Stamp
+   srt::sync::steady_clock::time_point m_tsTimeStamp;
 
    int m_iHeapLoc;		// location on the heap, -1 means not on the heap
 };
@@ -168,7 +168,7 @@ public:
 
       /// Update the timestamp of the UDT instance on the list.
       /// @param [in] u pointer to the UDT instance
-      /// @param [in] resechedule if the timestampe shoudl be rescheduled
+      /// @param [in] reschedule if the timestamp should be rescheduled
 
    void update(const CUDT* u, EReschedule reschedule);
 
@@ -177,7 +177,7 @@ public:
       /// @param [out] pkt the next packet to be sent
       /// @return 1 if successfully retrieved, -1 if no packet found.
 
-   int pop(sockaddr*& addr, CPacket& pkt);
+   int pop(sockaddr_any& addr, CPacket& pkt);
 
       /// Remove UDT instance from the list.
       /// @param [in] u pointer to the UDT instance
@@ -187,7 +187,7 @@ public:
       /// Retrieve the next scheduled processing time.
       /// @return Scheduled processing time of the first UDT socket in the list.
 
-   uint64_t getNextProcTime();
+   srt::sync::steady_clock::time_point getNextProcTime();
 
 private:
 
@@ -199,14 +199,14 @@ private:
    ///
    /// @param [in] ts time stamp: next processing time
    /// @param [in] u pointer to the UDT instance
-   void insert_(int64_t ts, const CUDT* u);
+   void insert_(const srt::sync::steady_clock::time_point &ts, const CUDT* u);
 
    /// Insert a new UDT instance into the list without realloc.
    /// Should be called if there is a gauranteed space for the element.
    ///
    /// @param [in] ts time stamp: next processing time
    /// @param [in] u pointer to the UDT instance
-   void insert_norealloc_(int64_t ts, const CUDT* u);
+   void insert_norealloc_(const srt::sync::steady_clock::time_point &ts, const CUDT* u);
 
    void remove_(const CUDT* u);
 
@@ -215,10 +215,10 @@ private:
    int m_iArrayLength;			// physical length of the array
    int m_iLastEntry;			// position of last entry on the heap array
 
-   pthread_mutex_t m_ListLock;
+   srt::sync::Mutex m_ListLock;
 
-   pthread_mutex_t* m_pWindowLock;
-   pthread_cond_t* m_pWindowCond;
+   srt::sync::Mutex* m_pWindowLock;
+   srt::sync::Condition* m_pWindowCond;
 
    CTimer* m_pTimer;
 
@@ -230,7 +230,7 @@ private:
 struct CRNode
 {
    CUDT* m_pUDT;                // Pointer to the instance of CUDT socket
-   uint64_t m_llTimeStamp_tk;      // Time Stamp
+   srt::sync::steady_clock::time_point m_tsTimeStamp;      // Time Stamp
 
    CRNode* m_pPrev;             // previous link
    CRNode* m_pNext;             // next link
@@ -325,29 +325,29 @@ public:
    ~CRendezvousQueue();
 
 public:
-   void insert(const SRTSOCKET& id, CUDT* u, int ipv, const sockaddr* addr, uint64_t ttl);
+   void insert(const SRTSOCKET& id, CUDT* u, const sockaddr_any& addr,
+               const srt::sync::steady_clock::time_point &ttl);
 
    // The should_lock parameter is given here to state as to whether
    // the lock should be applied here. If called from some internals
    // and the lock IS ALREADY APPLIED, use false here to prevent
    // double locking and deadlock in result.
    void remove(const SRTSOCKET& id, bool should_lock);
-   CUDT* retrieve(const sockaddr* addr, ref_t<SRTSOCKET> id);
+   CUDT* retrieve(const sockaddr_any& addr, SRTSOCKET& id);
 
    void updateConnStatus(EReadStatus rst, EConnectStatus, const CPacket& response);
 
 private:
    struct CRL
    {
-      SRTSOCKET m_iID;			// UDT socket ID (self)
-      CUDT* m_pUDT;			// UDT instance
-      int m_iIPversion;                 // IP version
-      sockaddr* m_pPeerAddr;		// UDT sonnection peer address
-      uint64_t m_ullTTL;			// the time that this request expires
+      SRTSOCKET m_iID;        // UDT socket ID (self)
+      CUDT* m_pUDT;           // UDT instance
+      sockaddr_any m_PeerAddr;// UDT sonnection peer address
+      srt::sync::steady_clock::time_point m_tsTTL;    // the time that this request expires
    };
-   std::list<CRL> m_lRendezvousID;      // The sockets currently in rendezvous mode
+   std::list<CRL> m_lRendezvousID;    // The sockets currently in rendezvous mode
 
-   pthread_mutex_t m_RIDVectorLock;
+   srt::sync::Mutex m_RIDVectorLock;
 };
 
 class CSndQueue
@@ -378,7 +378,7 @@ public:
       /// @param [in] packet packet to be sent out
       /// @return Size of data sent out.
 
-   int sendto(const sockaddr* addr, CPacket& packet);
+   int sendto(const sockaddr_any& addr, CPacket& packet);
 
 #ifdef SRT_ENABLE_IPOPTS
       /// Get the IP TTL.
@@ -401,21 +401,22 @@ public:
        m_bClosing = true;
    }
 
+   pthread_t threadId() { return m_WorkerThread; }
+
 private:
    static void* worker(void* param);
    pthread_t m_WorkerThread;
 
 
 private:
-   CSndUList* m_pSndUList;		// List of UDT instances for data sending
+   CSndUList* m_pSndUList;              // List of UDT instances for data sending
    CChannel* m_pChannel;                // The UDP channel for data sending
-   CTimer* m_pTimer;			// Timing facility
+   CTimer* m_pTimer;                    // Timing facility
 
-   pthread_mutex_t m_WindowLock;
-   pthread_cond_t m_WindowCond;
+   srt::sync::Mutex m_WindowLock;
+   srt::sync::Condition m_WindowCond;
 
-   volatile bool m_bClosing;		// closing the worker
-   pthread_cond_t m_ExitCond;
+   volatile bool m_bClosing;            // closing the worker
 
 #if defined(SRT_DEBUG_SNDQ_HIGHRATE)//>>debug high freq worker
    uint64_t m_ullDbgPeriod;
@@ -429,6 +430,10 @@ private:
         unsigned long lCondWait;    //block on m_WindowCond
    } m_WorkerStats;
 #endif /* SRT_DEBUG_SNDQ_HIGHRATE */
+
+#if ENABLE_LOGGING
+   static int m_counter;
+#endif
 
 private:
    CSndQueue(const CSndQueue&);
@@ -467,7 +472,12 @@ public:
       /// @param [out] packet received packet
       /// @return Data size of the packet
 
-   int recvfrom(int32_t id, ref_t<CPacket> packet);
+   int recvfrom(int32_t id, CPacket& to_packet);
+
+   // Needed for affinity check (debug only)
+   pthread_t threadId() { return m_WorkerThread; }
+
+   void stopWorker();
 
    void setClosing()
    {
@@ -478,10 +488,10 @@ private:
    static void* worker(void* param);
    pthread_t m_WorkerThread;
    // Subroutines of worker
-   EReadStatus worker_RetrieveUnit(ref_t<int32_t> id, ref_t<CUnit*> unit, sockaddr* sa);
-   EConnectStatus worker_ProcessConnectionRequest(CUnit* unit, const sockaddr* sa);
-   EConnectStatus worker_TryAsyncRend_OrStore(int32_t id, CUnit* unit, const sockaddr* sa);
-   EConnectStatus worker_ProcessAddressedPacket(int32_t id, CUnit* unit, const sockaddr* sa);
+   EReadStatus worker_RetrieveUnit(int32_t& id, CUnit*& unit, sockaddr_any& sa);
+   EConnectStatus worker_ProcessConnectionRequest(CUnit* unit, const sockaddr_any& sa);
+   EConnectStatus worker_TryAsyncRend_OrStore(int32_t id, CUnit* unit, const sockaddr_any& sa);
+   EConnectStatus worker_ProcessAddressedPacket(int32_t id, CUnit* unit, const sockaddr_any& sa);
 
 private:
    CUnitQueue m_UnitQueue;		// The received packet queue
@@ -494,13 +504,15 @@ private:
    int m_iPayloadSize;                  // packet payload size
 
    volatile bool m_bClosing;            // closing the worker
-   pthread_cond_t m_ExitCond;
+#if ENABLE_LOGGING
+   static int m_counter;
+#endif
 
 private:
    int setListener(CUDT* u);
    void removeListener(const CUDT* u);
 
-   void registerConnector(const SRTSOCKET& id, CUDT* u, int ipv, const sockaddr* addr, uint64_t ttl);
+   void registerConnector(const SRTSOCKET& id, CUDT* u, const sockaddr_any& addr, const srt::sync::steady_clock::time_point& ttl);
    void removeConnector(const SRTSOCKET& id, bool should_lock = true);
 
    void setNewEntry(CUDT* u);
@@ -510,16 +522,16 @@ private:
    void storePkt(int32_t id, CPacket* pkt);
 
 private:
-   pthread_mutex_t m_LSLock;
+   srt::sync::Mutex m_LSLock;
    CUDT* m_pListener;                                   // pointer to the (unique, if any) listening UDT entity
    CRendezvousQueue* m_pRendezvousQueue;                // The list of sockets in rendezvous mode
 
    std::vector<CUDT*> m_vNewEntry;                      // newly added entries, to be inserted
-   pthread_mutex_t m_IDLock;
+   srt::sync::Mutex m_IDLock;
 
    std::map<int32_t, std::queue<CPacket*> > m_mBuffer;	// temporary buffer for rendezvous connection request
-   pthread_mutex_t m_PassLock;
-   pthread_cond_t m_PassCond;
+   srt::sync::Mutex m_BufferLock;
+   srt::sync::Condition m_BufferCond;
 
 private:
    CRcvQueue(const CRcvQueue&);
@@ -534,7 +546,7 @@ struct CMultiplexer
    CTimer* m_pTimer;        // The timer
 
    int m_iPort;         // The UDP port number of this multiplexer
-   int m_iIPversion;    // IP version
+   int m_iIPversion;    // Address family (AF_INET or AF_INET6)
 #ifdef SRT_ENABLE_IPOPTS
    int m_iIpTTL;
    int m_iIpToS;
